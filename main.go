@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 )
@@ -29,6 +30,7 @@ type FileContentType struct {
 	EncodeMd5 string
 }
 type DumpPacketType struct {
+	Platform  string
 	CrashGuid string
 	Files     []FileContentType
 }
@@ -64,8 +66,18 @@ func main() {
 	} else {
 		Client()
 	}
+	println("exit")
 }
-
+func httpPost(url, contentType string, body io.Reader) (resp *http.Response, err error) {
+	var c = &http.Client{}
+	req, err := http.NewRequest("POST", url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Platform", runtime.GOOS)
+	return c.Do(req)
+}
 func Client() {
 	AppName = flag.String("AppName", "AppName", "")
 	CrashGUID = flag.String("CrashGUID", "CrashGUID", "")
@@ -80,7 +92,7 @@ func Client() {
 	}
 	reader := bytes.NewBuffer(pack)
 	len := reader.Len()
-	if rsp, err := http.Post(*HttpUrl+HttpUrlReceiverCrashPath, "application/octet-stream", reader); err != nil {
+	if rsp, err := httpPost(*HttpUrl+HttpUrlReceiverCrashPath, "application/octet-stream", reader); err != nil {
 		fmt.Printf("post %s", err.Error())
 	} else {
 		var buff = make([]byte, 400)
@@ -125,14 +137,17 @@ func Server() {
 				break
 			}
 		}
-		packet := &DumpPacketType{}
-		err := msgpack.Unmarshal(buff, packet)
-		if err != nil {
-			fmt.Printf("msgpack.Unmarshal %d,%d,%s", request.ContentLength, totalLen, err.Error())
-			return
+		if strings.ToLower(request.Header.Get("Platform")) == "windows" {
+			packet := &DumpPacketType{}
+			err := msgpack.Unmarshal(buff, packet)
+			if err != nil {
+				fmt.Printf("msgpack.Unmarshal %d,%d,%s", request.ContentLength, totalLen, err.Error())
+				return
+			}
+			log.Printf("Recv %s,%s\n", packet.Platform, packet.CrashGuid)
+			UnPackCrash(packet)
 		}
-		log.Printf("Recv %s\n", packet.CrashGuid)
-		UnPackCrash(packet)
+
 		io.WriteString(writer, "OK")
 	})
 	listener, err := net.Listen("tcp4", fmt.Sprintf(":%d", *HttpPort))
@@ -148,16 +163,19 @@ func Server() {
 	AnalyiseChan = make(chan string, 1024)
 	ExitChan = make(chan os.Signal)
 	signal.Notify(ExitChan, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
-	select {
-	case <-ExitChan:
-		return
-	case Path := <-AnalyiseChan:
-		AnlyiseMiniDump(Path)
+	for{
+		select {
+		case <-ExitChan:
+			return
+		case Path := <-AnalyiseChan:
+			AnlyiseMiniDump(Path)
+		}
 	}
 }
 
 func PackCrashDir(CrashPath string, CrashGUID string) ([]byte, error) {
 	packet := &DumpPacketType{}
+	packet.Platform = runtime.GOOS
 	packet.CrashGuid = CrashGUID
 	packet.Files = make([]FileContentType, 0)
 	filepath.WalkDir(CrashPath, func(path string, d fs.DirEntry, err error) error {
@@ -212,6 +230,7 @@ func UnPackCrash(Packet *DumpPacketType) {
 			totalRead += nRead
 		}
 		Md5 := md5.Sum(buff)
+
 		EncodeMd5 := md5.Sum(File.Content)
 
 		fmt.Printf("Recv File %s,%s,%s,%d,%d\n", File.FileName, hex.EncodeToString(Md5[:]), hex.EncodeToString(EncodeMd5[:]), totalRead, File.Len)
