@@ -1,2 +1,4 @@
 # CrashReportClient
 UE4 custom CrashReportClient
+目前支持Win64，后续可以支持Linux和Android以及IOS
+本程序即可作为客户端上报crash，也能作为一个http服务器接收crash并分析crash信息
